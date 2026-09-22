@@ -1,0 +1,213 @@
+body {
+  margin: 0px;
+  background-color: #302E2B;
+  font-family: Helvetica;
+  color: #ffffff;
+  text-align: center;
+  place-items: center;
+}
+
+/* WHY ".square.selected" and not just ".selected":
+   the squares' color comes from .dark / .light further down. Two rules
+   with equal specificity (one class each) are decided by file order, and
+   .dark/.light come later — so a plain .selected LOSES and the yellow
+   never shows. Two classes (.square.selected) outrank one class. */
+.square.selected {
+  background-color: rgb(212, 255, 0);
+}
+
+/* Legal-move hints while a piece is selected — chess.com style:
+   a translucent grey ball on empty target squares, a matching ring on
+   capturable pieces. SAME specificity trap as .selected above: .dark/.light
+   use the background SHORTHAND, which also resets background-image, and
+   they come later in this file — so ".legal-move" alone would lose the
+   cascade and the ball would never render. Two classes outrank one. */
+.square.legal-move {
+  background-image: radial-gradient(
+    circle,
+    rgba(60, 60, 60, 0.45) 0%,
+    rgba(60, 60, 60, 0.45) 23%,  /* solid grey ball up to 30% */
+    rgba(60, 60, 60, 0) 20%      /* then a soft fade-out edge */
+  );
+}
+
+.square.legal-capture {
+  box-shadow: inset 0 0 0 5px rgba(60, 60, 60, 0.45);
+}
+
+.board {
+  width: min(88vw 560px);
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  border: 4px solid #0d0d0d;
+  aspect-ratio: 1;
+}
+
+.square {
+  position: relative;   /* anchor for the absolutely-positioned piece image */
+  font-size: clamp(32px, 7vw, 52px);
+  border: 0px;
+  width: 80px;
+  height: 80px;
+  cursor: pointer;
+}
+
+/* The PNG piece picture, layered on top of the Unicode glyph.
+   object-fit: contain keeps any aspect ratio without stretching. */
+.piece-img {
+  position: absolute;
+  inset: 0;             /* top/right/bottom/left: 0 — fill the square */
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none; /* clicks pass through to the button underneath */
+}
+
+.dark { background: #739552; }
+.light { background: #ebecd0; }
+
+/* ---- Two-column layout: board left, AI thinking panel right ---- */
+.layout {
+  display: flex;
+  gap: 28px;
+  justify-content: center;
+  align-items: stretch; /* lets .chat stretch to the board column's height */
+  flex-wrap: wrap;      /* stack vertically on narrow screens */
+  padding: 0 16px;
+}
+
+.board-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ---- The AI thinking / debugging panel ----
+   A core feature of the site, so it gets real estate: it stretches to
+   the full height of the board column next to it and scrolls inside. */
+.chat {
+  width: min(92vw, 460px);
+  align-self: stretch;  /* fill the height of the row (board column is tallest) */
+  max-height: 720px;
+  overflow-y: auto;     /* the panel scrolls, the page stays put */
+  scroll-behavior: smooth; /* programmatic scrolls (auto-scroll, toggles)
+                              glide instead of teleporting */
+  text-align: left;
+  background: #242220;
+  border: 1px solid #44403c;
+  border-radius: 10px;
+  padding: 16px 18px;
+  box-sizing: border-box;
+}
+
+.chat h2 { margin: 0 0 4px; font-size: 20px; }
+.model-label {
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: #9a9a9a;
+  word-break: break-all; /* long model ids must wrap, not overflow */
+}
+
+/* Each AI turn is its own card — much clearer than a thin separator. */
+.chat-entry {
+  background: #1c1a18;
+  border: 1px solid #3a3835;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 10px 0;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+/* ---- "Thinking" animation (ChatGPT / Claude style) ----
+   Two layers: a light band sweeping across the word (shimmer) and
+   three dots bouncing in sequence. Pure CSS, runs at 60fps on the GPU. */
+.chat-entry.pending {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+}
+
+/* The word itself is transparent; a moving gradient shows through —
+   background-clip: text makes the gradient paint only the glyphs. */
+.shimmer {
+  background: linear-gradient(90deg, #8a8a8a 0%, #ffffff 50%, #8a8a8a 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 1.6s linear infinite;
+}
+
+@keyframes shimmer {
+  from { background-position: 200% 0; } /* band starts off to the right... */
+  to   { background-position: -200% 0; } /* ...and sweeps left, looping */
+}
+
+.dots { display: inline-flex; gap: 4px; }
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #8fd18f;
+  animation: bounce 1.2s ease-in-out infinite;
+}
+
+/* Staggering the delays makes the wave travel dot 1 -> 2 -> 3. */
+.dot:nth-child(2) { animation-delay: 0.15s; }
+.dot:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes bounce {
+  0%, 60%, 100% { transform: translateY(0);    opacity: 0.45; }
+  30%           { transform: translateY(-5px); opacity: 1;    }
+}
+.chat-entry.fallback .chat-move { color: #e0b341; } /* amber = random move */
+.chat-entry.error .chat-error { color: #ff7b6b; }
+
+.chat-move { font-weight: bold; font-size: 17px; margin: 0 0 6px; }
+
+.badge {
+  display: inline-block;
+  background: #3a3835;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  margin-left: 6px;
+  vertical-align: middle;
+  font-weight: normal;
+}
+
+.chat-thought { margin: 6px 0; color: #e8e6e3; }
+
+/* Explains cards where the model never produced a finished answer and
+   the move had to be mined from its raw reasoning channel. */
+.chat-note {
+  margin: 6px 0;
+  font-size: 13px;
+  color: #e0b341; /* same amber as fallback moves — "pay attention" */
+  font-style: italic;
+}
+
+/* The collapsible raw-thinking section */
+.chat-entry details { margin-top: 6px; }
+.chat-entry summary {
+  cursor: pointer;
+  color: #8fd18f;         /* green = "click me" affordance */
+  font-size: 13px;
+  user-select: none;
+}
+.chat-reasoning {
+  white-space: pre-wrap;   /* keep the model's line breaks */
+  font-size: 13px;
+  color: #b8b5b1;
+  max-height: 340px;
+  overflow-y: auto;
+  font-family: Consolas, monospace;
+  line-height: 1.5;
+  margin: 6px 0 0;
+}
+
+.footer-hint { font-size: 12px; color: #8a8a8a; }
