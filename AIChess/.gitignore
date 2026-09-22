@@ -1,24 +1,12 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+# Patterns without a leading slash match at EVERY depth inside this
+# project folder — so one file here covers everything.
 
-node_modules
-dist
-dist-ssr
-*.local
+# Dependencies — never commit; reinstall anytime with: npm install
+node_modules/
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+# Build output — regenerable with: npm run build
+dist/
+
+# Secrets/config — must NEVER be added, even by "git add ." .
+# The OpenRouter key lives ONLY in Windows env vars; .env holds no key.
+.env
