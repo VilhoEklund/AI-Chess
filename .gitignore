@@ -1,11 +1,10 @@
-# Everything lives inside AIChess/ — these folder-agnostic patterns cover
-# it from here too, in case "git add ." is ever run at this outer level.
-
 # Dependencies — never commit; reinstall with: npm install
 node_modules/
 
-# Secrets — never commit (key lives in Windows env vars)
+# Local settings and secrets
 .env
+.env.*
+!.env.example
 
 # Build output — regenerable with: npm run build
 dist/

@@ -4,12 +4,23 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Chess } from "chess.js";
+import { requestAiMove } from "./ai-client.js";
+import {
+  backupMove, DEFAULT_THINKING_SECONDS, gameOverMessage,
+  MAX_THINKING_SECONDS, MIN_THINKING_SECONDS, normalizeThinkingSeconds,
+} from "../shared/ai.js";
 
 // Map from "color + piece type" to a Unicode chess glyph.
 const symbols = {
   wp: "♙", wn: "♘", wb: "♗", wr: "♖", wq: "♕", wk: "♔", // white pieces
   bp: "♟", bn: "♞", bb: "♝", br: "♜", bq: "♛", bk: "♚"  // black pieces
 };
+
+function formatTime(seconds) {
+  if (seconds < 60) return `${seconds} s`;
+  const remainder = seconds % 60;
+  return `${Math.floor(seconds / 60)} min${remainder ? ` ${remainder} s` : ""}`;
+}
 
 /**
  * Renders ONE piece: the PNG from public/pieces/<key>.png, or — only if
@@ -49,7 +60,7 @@ function forceIllegalMove(fen, from, to) {
   // Teleport the piece, ignoring every chess rule — that is the gimmick.
   game.remove(from);
   game.remove(to);
-  game.put(piece, to);
+  if (!game.put(piece, to)) throw new Error("AI move could not be placed.");
 
   // FEN surgery: [1] side to move, [2] castling, [3] en passant.
   const parts = game.fen().split(" ");
@@ -70,6 +81,31 @@ export default function App() {
   const [message, setMessage] = useState("White to move");
   const [model, setModel] = useState("(loading…)");  // which AI we play against
   const [chat, setChat] = useState([]);              // one entry per AI turn
+  const [thinkingSeconds, setThinkingSeconds] = useState(() => {
+    try {
+      const saved = localStorage.getItem("ai-thinking-seconds");
+      return saved === null ? DEFAULT_THINKING_SECONDS : normalizeThinkingSeconds(Number(saved));
+    } catch {
+      return DEFAULT_THINKING_SECONDS;
+    }
+  });
+  const [remainingSeconds, setRemainingSeconds] = useState(0);
+  const activeRequest = useRef(null);
+
+  useEffect(() => {
+    try { localStorage.setItem("ai-thinking-seconds", String(thinkingSeconds)); } catch { /* Storage is optional. */ }
+  }, [thinkingSeconds]);
+
+  useEffect(() => {
+    if (!thinking) return;
+    const deadline = Date.now() + thinkingSeconds * 1000;
+    const timer = setInterval(() => {
+      setRemainingSeconds(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
+    }, 100);
+    return () => clearInterval(timer);
+  }, [thinking, thinkingSeconds]);
+
+  useEffect(() => () => activeRequest.current?.abort(), []);
 
   // Re-parse the FEN every render — derive, don't store twice.
   const game = new Chess(fen, { skipValidation: true });
@@ -111,85 +147,73 @@ export default function App() {
    * historySoFar = ALL moves incl. the player's last, sent to the AI.
    */
   async function askAi(positionFen, historySoFar) {
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    setRemainingSeconds(thinkingSeconds);
     setThinking(true);
     setMessage("AI is thinking...");
 
-    try {
-      // Relative URL -> same origin -> Vite dev server -> proxy :3001.
-      const response = await fetch("/api/ai-move", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fen: positionFen, history: historySoFar })
-      });
-
-      // Read as TEXT first: if the body is empty/garbage, response.json()
-      // would throw the cryptic "Unexpected end of JSON input". This way
-      // we see the raw body in the console instead.
-      const text = await response.text();
-      console.log("AI raw response:", text);
-
-      const data = JSON.parse(text);
-      if (!response.ok) throw new Error(data.error || "AI request failed");
-
-      const aiMove = data.move.toLowerCase(); // e.g. "e7e5"
-      // Same shape check the server already did — defense in depth.
-      if (!/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(aiMove)) {
-        throw new Error(`Bad AI move: ${aiMove}`);
+    function finishTurn(data) {
+      if (data.gameOver) {
+        setMessage(data.message);
+        return;
       }
-
-      const from = aiMove.slice(0, 2); // "e7"
-      const to = aiMove.slice(2, 4);   // "e5"
-
-      // First try to play the move HONESTLY through chess.js.
+      const aiMove = data.move;
+      const from = aiMove.slice(0, 2);
+      const to = aiMove.slice(2, 4);
       const normal = new Chess(positionFen, { skipValidation: true });
-
-      // The AI's move is recorded either as proper SAN ("Nf6") when legal,
-      // or as "e7e5 (forced)" when it had to be teleported.
+      let nextFen;
       let aiSan;
-
+      let moveMessage;
       try {
-        // aiMove[4] is the promotion letter if the AI sent one; for a normal
-        // move it's undefined → default to queen ("q").
         const result = normal.move({ from, to, promotion: aiMove[4] || "q" });
         aiSan = result.san;
-        setFen(normal.fen());
-        setMessage(
-          data.fallback
-            ? `AI failed 3× — random fallback: ${aiMove}`
-            : `AI played ${aiMove} — legal`
-        );
+        nextFen = normal.fen();
+        moveMessage = data.fallback
+          ? `Backup move played: ${aiMove} — your turn`
+          : `AI played ${aiMove} — legal`;
       } catch {
-        // Illegal → teleport it onto the board (the gimmick).
-        setFen(forceIllegalMove(positionFen, from, to));
-        setMessage(`AI played ${aiMove} — ILLEGAL, but accepted`);
-        aiSan = `${from}${to}${aiMove[4] || ""} (forced)`;
+        nextFen = forceIllegalMove(positionFen, from, to);
+        moveMessage = `AI played ${aiMove} — ILLEGAL, but accepted`;
+        aiSan = `${aiMove} (forced)`;
       }
-
-      // Extend the history with the AI's move and store it (new array —
-      // React state must be replaced, never mutated).
+      setFen(nextFen);
+      setMessage(gameOverMessage(new Chess(nextFen, { skipValidation: true })) || moveMessage);
       setHistory([...historySoFar, aiSan]);
-
-      // Append a chat entry with everything the server sent back. The
-      // `chat` panel is the debugging window into the AI.
       setChat((prev) => [...prev, {
         move: aiMove,
         fallback: data.fallback || false,
+        fallbackReason: data.fallbackReason || "",
         thought: data.thought || "",
         reasoning: data.reasoning || "",
         source: data.source || "?",
-        attempts: data.attempts || 1,
-        ms: data.ms || 0,
-        moveNumber: Math.ceil(historySoFar.length / 2) + 1
+        attempts: data.attempts ?? 1,
+        ms: data.ms ?? 0,
+        moveNumber: Math.ceil(historySoFar.length / 2),
       }]);
-    } catch (error) {
-      // Any failure (network, JSON parse, bad move format...) lands here.
-      // `fen` was not changed, so the position still says "Black to move"
-      // and the game is stuck until "New game" — but the error is visible
-      // in the chat panel now, which is the point of the panel.
-      setMessage(error.message);
-      setChat((prev) => [...prev, { error: true, text: error.message }]);
+    }
+
+    try {
+      const data = await requestAiMove({
+        fen: positionFen, history: historySoFar, thinkingSeconds, signal: controller.signal,
+      });
+      if (controller.signal.aborted || activeRequest.current !== controller) return;
+      finishTurn(data);
+    } catch {
+      if (controller.signal.aborted || activeRequest.current !== controller) return;
+      // Last line of defence if a reply cannot actually be placed on the board.
+      finishTurn({
+        ...backupMove(new Chess(positionFen, { skipValidation: true }),
+          "The AI move could not be used. A legal backup move was played."),
+        attempts: 0,
+      });
     } finally {
-      setThinking(false); // always re-enable the board
+      if (activeRequest.current === controller) {
+        activeRequest.current = null;
+        setThinking(false);
+        setRemainingSeconds(0);
+      }
     }
   }
 
@@ -200,7 +224,7 @@ export default function App() {
    */
   async function clickSquare(square) {
     // Ignore clicks while the AI thinks, or when it is not White's turn.
-    if (thinking || game.turn() !== "w") return;
+    if (thinking || game.turn() !== "w" || gameOverMessage(game)) return;
 
     if (!selected) {
       // First click: remember the square IF it holds one of our pieces.
@@ -222,6 +246,11 @@ export default function App() {
       setSelected(null);
       setFen(next.fen());
       setHistory(newHistory);
+      const resultMessage = gameOverMessage(next);
+      if (resultMessage) {
+        setMessage(resultMessage);
+        return;
+      }
       await askAi(next.fen(), newHistory);
     } catch {
       // move() threw: the attempted move breaks the chess rules.
@@ -236,6 +265,10 @@ export default function App() {
   }
 
   function reset() {
+    activeRequest.current?.abort();
+    activeRequest.current = null;
+    setThinking(false);
+    setRemainingSeconds(0);
     setFen(new Chess().fen());
     setHistory([]);
     setChat([]); // fresh game = fresh thinking log
@@ -263,6 +296,7 @@ export default function App() {
                 return (
                   <button
                     key={square}
+                    aria-label={square}
                     className={`square ${light ? "light" : "dark"} ${
                       selected === square ? "selected" : ""
                     } ${
@@ -285,74 +319,113 @@ export default function App() {
           <button className="reset" onClick={reset}>New game</button>
         </div>
 
-        <aside className="chat" ref={chatRef}>
-          <h2>AI thinking</h2>
-          <p className="model-label">Model: {model}</p>
-
-          {/* While waiting for the server, show a live "thinking" entry. */}
-          {/* While waiting for the server: ChatGPT-style "Thinking" —
-              a shimmer sweeping across the word plus three bouncing
-              dots. Pure CSS (see .shimmer / .dot in index.css). */}
-          {thinking && (
-            <div className="chat-entry pending">
-              <span className="shimmer">Thinking</span>
-              <span className="dots">
-                <span className="dot" />
-                <span className="dot" />
-                <span className="dot" />
-              </span>
+        <section className="ai-panel" aria-label="AI controls and moves">
+          <div className="thinking-controls">
+            <div className="thinking-label">
+              <label htmlFor="thinking-time">AI thinking time</label>
+              <output htmlFor="thinking-time">{formatTime(thinkingSeconds)}</output>
             </div>
-          )}
+            <input
+              id="thinking-time"
+              className="thinking-slider"
+              type="range"
+              min={MIN_THINKING_SECONDS}
+              max={MAX_THINKING_SECONDS}
+              step="5"
+              value={thinkingSeconds}
+              disabled={thinking}
+              aria-valuetext={`${thinkingSeconds} seconds maximum per move`}
+              aria-describedby="thinking-help"
+              style={{ "--slider-fill": `${(thinkingSeconds - MIN_THINKING_SECONDS) / (MAX_THINKING_SECONDS - MIN_THINKING_SECONDS) * 100}%` }}
+              onChange={(event) => setThinkingSeconds(Number(event.target.value))}
+            />
+            <div className="thinking-scale" aria-hidden="true">
+              <span>Quick · 5 s</span><span>More time · 5 min</span>
+            </div>
+            <p id="thinking-help">
+              Maximum time per move. If the AI cannot answer in time, a legal backup move keeps the game going.
+            </p>
+            {thinking && (
+              <div className="thinking-timer">
+                <div className="thinking-scale">
+                  <span>{remainingSeconds > 0 ? "Time remaining" : "Finishing move…"}</span>
+                  <span>{formatTime(remainingSeconds)}</span>
+                </div>
+                <progress aria-label="AI thinking time remaining" max={thinkingSeconds} value={remainingSeconds} />
+              </div>
+            )}
+          </div>
 
-          {chat.map((entry, i) => (
-            <div
-              key={i}
-              className={`chat-entry ${entry.fallback ? "fallback" : ""} ${
-                entry.error ? "error" : ""
-              }`}
-            >
-              {entry.error ? (
-                <p className="chat-error">✗ {entry.text}</p>
-              ) : (
-                <>
-                  <p className="chat-move">
-                    {`#${entry.moveNumber} ${entry.move}`}
-                    <span className="badge">{(entry.ms / 1000).toFixed(1)} s</span>
-                    <span className="badge">{entry.attempts} tries</span>
-                    <span className="badge">{entry.source}</span>
-                  </p>
-                  {!entry.thought && entry.source === "reasoning" && (
-                    <p className="chat-note">
-                      no finished answer — the move was mined from the raw
-                      thinking below
+          <aside className="chat" ref={chatRef}>
+            <h2>AI thinking</h2>
+            <p className="model-label">Model: {model}</p>
+
+            {/* While waiting for the server, show a live "thinking" entry. */}
+            {/* While waiting for the server: ChatGPT-style "Thinking" —
+                a shimmer sweeping across the word plus three bouncing
+                dots. Pure CSS (see .shimmer / .dot in index.css). */}
+            {thinking && (
+              <div className="chat-entry pending">
+                <span className="shimmer">Thinking</span>
+                <span className="dots">
+                  <span className="dot" />
+                  <span className="dot" />
+                  <span className="dot" />
+                </span>
+              </div>
+            )}
+
+            {chat.map((entry, i) => (
+              <div
+                key={i}
+                className={`chat-entry ${entry.fallback ? "fallback" : ""} ${
+                  entry.error ? "error" : ""
+                }`}
+              >
+                {entry.error ? (
+                  <p className="chat-error">✗ {entry.text}</p>
+                ) : (
+                  <>
+                    <p className="chat-move">
+                      {`#${entry.moveNumber} ${entry.move}`}
+                      <span className="badge">{(entry.ms / 1000).toFixed(1)} s</span>
+                      {entry.attempts > 0 && <span className="badge">{entry.attempts} {entry.attempts === 1 ? "try" : "tries"}</span>}
+                      <span className="badge">{entry.fallback ? "Backup move" : entry.source}</span>
                     </p>
-                  )}
-                  {entry.thought && <p className="chat-thought">{entry.thought}</p>}
-                  {entry.reasoning && (
-                    <details
-                      onToggle={(e) => {
-                        // When expanded, scroll the panel so the text is
-                        // actually ON SCREEN — otherwise it opens below
-                        // the fold and looks like nothing happened.
-                        if (e.target.open) {
-                          e.target.scrollIntoView({
-                            block: "start",
-                            behavior: "smooth"
-                          });
-                        }
-                      }}
-                    >
-                      <summary>
-                        hidden reasoning ({entry.reasoning.length} chars)
-                      </summary>
-                      <pre className="chat-reasoning">{entry.reasoning}</pre>
-                    </details>
-                  )}
-                </>
-              )}
-            </div>
-          ))}
-        </aside>
+                    {entry.fallbackReason && <p className="chat-note">{entry.fallbackReason}</p>}
+                    {!entry.thought && entry.source === "reasoning" && (
+                      <p className="chat-note">
+                        no finished answer — the move was mined from the raw
+                        thinking below
+                      </p>
+                    )}
+                    {entry.thought && <p className="chat-thought">{entry.thought}</p>}
+                    {entry.reasoning && (
+                      <details
+                        onToggle={(e) => {
+                          // When expanded, scroll the panel so the text is
+                          // actually ON SCREEN — otherwise it opens below
+                          // the fold and looks like nothing happened.
+                          if (e.target.open) {
+                            e.target.scrollIntoView({
+                              block: "start",
+                              behavior: "smooth"
+                            });
+                          }
+                        }}
+                      >
+                        <summary>
+                          hidden reasoning ({entry.reasoning.length} chars)
+                        </summary>
+                        <pre className="chat-reasoning">{entry.reasoning}</pre>
+                      </details>
+                    )}
+                  </>
+                )}
+              </div>
+            ))}
+          </aside>
+        </section>
       </div>
 
       <p className="footer-hint">
@@ -361,4 +434,3 @@ export default function App() {
     </main>
   );
 }
-
