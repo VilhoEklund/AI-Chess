@@ -101,3 +101,10 @@ The build goes into `dist/`. Keep source files and `package-lock.json` in Git;
 
 `npm run preview` previews the built frontend only. Use the two development
 commands above when playing locally with the AI backend.
+
+
+THINGS TO IMPROVE
+
+- letters and numbers on the left and bottom tiles
+- different resolutions still break the games layout (working with atleast 1920x1200)
+- chat should tell if move was illegal or not

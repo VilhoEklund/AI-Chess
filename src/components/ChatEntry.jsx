@@ -20,7 +20,7 @@ export default function ChatEntry({ entry }) {
             {`#${entry.moveNumber} ${entry.move}`}
             <span className="badge">{(entry.ms / 1000).toFixed(1)} s</span>
             {entry.attempts > 0 && <span className="badge">{entry.attempts} {entry.attempts === 1 ? "try" : "tries"}</span>}
-            <span className="badge">{entry.fallback ? "Backup move" : entry.source}</span>
+            <span className="badge">{entry.legal == undefined ? "?" : entry.legal ? "Legal" : "ILLEGAL"}</span>
           </p>
           {entry.fallbackReason && <p className="chat-note">{entry.fallbackReason}</p>}
           {!entry.thought && entry.source === "reasoning" && (

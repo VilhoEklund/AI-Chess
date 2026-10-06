@@ -7,7 +7,10 @@
 //   server/move-route.js  — POST /api/ai-move   (the AI turn, with fallbacks)
 // This file only creates the app, injects dependencies, and mounts them.
 
-import "dotenv/config";
+// `override: true` makes the local .env file win over any same-named
+// Windows environment variables (dotenv skips existing vars by default).
+import dotenv from "dotenv";
+dotenv.config({ override: true });
 import express from "express";
 import { pathToFileURL } from "node:url";
 import { createModelRoute } from "./server/model-route.js";

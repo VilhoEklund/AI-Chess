@@ -37,6 +37,7 @@ export default function App() {
     }
   });
   const [remainingSeconds, setRemainingSeconds] = useState(0);
+  const [gameOver, setGameOver] = useState(false);  // end states gameOverMessage() can't express
   const activeRequest = useRef(null);
 
   useEffect(() => {
@@ -110,6 +111,7 @@ export default function App() {
       const normal = new Chess(positionFen, { skipValidation: true });
       let nextFen;
       let aiSan;
+      let aiLegal;
       let moveMessage;
       try {
         const result = normal.move({ from, to, promotion: aiMove[4] || "q" });
@@ -118,16 +120,19 @@ export default function App() {
         moveMessage = data.fallback
           ? `Backup move played: ${aiMove} — your turn`
           : `AI played ${aiMove} — legal`;
+        aiLegal = true;
       } catch {
         nextFen = forceIllegalMove(positionFen, from, to);
         moveMessage = `AI played ${aiMove} — ILLEGAL, but accepted`;
         aiSan = `${aiMove} (forced)`;
+        aiLegal = false;
       }
       setFen(nextFen);
       setMessage(gameOverMessage(new Chess(nextFen, { skipValidation: true })) || moveMessage);
       setHistory([...historySoFar, aiSan]);
       setChat((prev) => [...prev, {
         move: aiMove,
+        legal: aiLegal,
         fallback: data.fallback || false,
         fallbackReason: data.fallbackReason || "",
         thought: data.thought || "",
@@ -168,8 +173,9 @@ export default function App() {
    * @param {string} square - e.g. "e2"
    */
   async function clickSquare(square) {
-    // Ignore clicks while the AI thinks, or when it is not White's turn.
-    if (thinking || game.turn() !== "w" || gameOverMessage(game)) return;
+    // Ignore clicks while the AI thinks, when it is not White's turn, or
+    // when the game has ended (e.g. by capturing the AI's king).
+    if (thinking || gameOver || game.turn() !== "w" || gameOverMessage(game)) return;
 
     if (!selected) {
       // First click: remember the square IF it holds one of our pieces.
@@ -181,6 +187,16 @@ export default function App() {
     // Second click: try the move on a SCRATCH copy so the real game
     // stays untouched if the move is illegal.
     const next = new Chess(fen, { skipValidation: true });
+
+    // If the AI's illegal move left its king vulnerable, capturing it
+    // ends the game with a player win — the board is not even mutated.
+    const target = game.get(square);
+    if (target?.color === "b" && target?.type === "k") {
+      setSelected(null);
+      setGameOver(true);
+      setMessage("You captured the AI's king — you win!");
+      return;
+    }
 
     try {
       // Player promotions auto-queen; move() returns the move object.
@@ -214,6 +230,7 @@ export default function App() {
     activeRequest.current = null;
     setThinking(false);
     setRemainingSeconds(0);
+    setGameOver(false);
     setFen(new Chess().fen());
     setHistory([]);
     setChat([]); // fresh game = fresh thinking log
@@ -225,34 +242,48 @@ export default function App() {
   // Curly braces { } embed JavaScript values/expressions into the markup.
   return (
     <main>
-      <h1>AI Illegal Chess</h1>
-      <p>{message}</p>
-
       <div className="layout">
-        <div className="board-column">
-          <Board
-            board={board}
-            selected={selected}
-            legalTargets={legalTargets}
-            onSquareClick={clickSquare}
-          />
-          <button className="reset" onClick={reset}>New game</button>
+      
+        <div className="left-side">
+
+            <div className="controls-panel">
+              
+              <div className="controls left move-label">
+                <h1 className="title">AI Illegal Chess</h1>
+                <p className="move">{message}</p>
+              </div>
+
+              <div className="controls right">
+                <ThinkingControls
+                  thinkingSeconds={thinkingSeconds}
+                  remainingSeconds={remainingSeconds}
+                  thinking={thinking}
+                  onChange={setThinkingSeconds}
+                />
+              </div>
+
+            </div>
+
+            <div className="board-column">
+              <Board
+                board={board}
+                selected={selected}
+                legalTargets={legalTargets}
+                onSquareClick={clickSquare}
+              />
+            </div>
+            
         </div>
 
-        <section className="ai-panel" aria-label="AI controls and moves">
-          <ThinkingControls
-            thinkingSeconds={thinkingSeconds}
-            remainingSeconds={remainingSeconds}
-            thinking={thinking}
-            onChange={setThinkingSeconds}
-          />
-          <ChatPanel chat={chat} thinking={thinking} model={model} />
-        </section>
+        <div className="right-side">
+          
+          <section className="ai-panel" aria-label="AI controls and moves">
+            <ChatPanel chat={chat} thinking={thinking} model={model} onReset={reset} />
+          </section>
+        </div>
       </div>
+      <p className="footer-hint">Chess, except the AI sometimes breaks the rules and its illegal moves still count. Punish the blunders, take its king, and you win.</p>
 
-      <p className="footer-hint">
-        Illegal AI moves are forced onto the board — that is the game.
-      </p>
     </main>
   );
 }

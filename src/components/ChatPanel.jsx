@@ -9,7 +9,7 @@
 import { useEffect, useRef } from "react";
 import ChatEntry from "./ChatEntry.jsx";
 
-export default function ChatPanel({ chat, thinking, model }) {
+export default function ChatPanel({ chat, thinking, model, onReset }) {
   // The chat panel scrolls itself to the bottom whenever it grows.
   const chatRef = useRef(null);
   useEffect(() => {
@@ -18,8 +18,16 @@ export default function ChatPanel({ chat, thinking, model }) {
 
   return (
     <aside className="chat" ref={chatRef}>
-      <h2>AI thinking</h2>
-      <p className="model-label">Model: {model}</p>
+      <div className="panel">
+        <div>
+          <h2>AI thinking</h2>
+          <p className="model-label">Model: {model}</p>
+        </div>
+        <div>
+          <button className="reset" onClick={onReset}>New game</button>
+        </div>
+      </div>
+
 
       {/* While waiting for the server: ChatGPT-style "Thinking" —
           a shimmer sweeping across the word plus three bouncing
@@ -32,6 +40,7 @@ export default function ChatPanel({ chat, thinking, model }) {
             <span className="dot" />
             <span className="dot" />
           </span>
+
         </div>
       )}
 
